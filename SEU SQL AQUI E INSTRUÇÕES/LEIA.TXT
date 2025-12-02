@@ -4,7 +4,7 @@ inclua o /dash em sua url
 email administrador
 
 email: admin@eu.com
-senha: Resident4567#
+senha: 2w75u3nNcn9ejClg
 Senha2fa: qwe123#
 
 gateway https://bspaybr.com/ cria sua conta aqui para receber os pagamentos.

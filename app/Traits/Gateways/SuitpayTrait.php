@@ -76,44 +76,46 @@ public static function requestQrcode($request)
 
         // Dados a serem enviados para gerar o QR Code
         $postData = [
-            'client_id' => self::$clienteId,
-            'client_secret' => self::$clienteSecret,
-            'nome' => auth('api')->user()->name,
-            'documento' => \Helper::soNumero($request->input("cpf")),
-            'valor' => (float) $request->input("amount"),
+            'requestNumber' => $idUnico,
+            'dueDate' => date('Y-m-d', strtotime('+1 day')),
+            'amount' => (float) $request->input("amount"),
             'descricao' => 'Depósito via PIX',
-            'urlnoty' => url('/suitpay/callback'),
-            'telefone' => \Helper::soNumero(auth('api')->user()->phone),
-            'email' => auth('api')->user()->email,
+            'callbackUrl' => url('/suitpay/callback'),
+            'client' => [
+                'name' => auth('api')->user()->name,
+                'document' => \Helper::soNumero($request->input("cpf")),
+                'email' => auth('api')->user()->email,
+                'telefone' => \Helper::soNumero(auth('api')->user()->phone),
+            ]
         ];
 
         // URL de requisição para a API
-        $url = self::$uri . 'pix/qrcode';
+        $url = self::$uri . 'gateway/request-qrcode';
         \Log::info('[vizzerpay] Enviando requisição para gerar QR Code', [
             'url' => $url,
             'postData' => $postData
         ]);
 
         // Enviar requisição para a API
-        $response = Http::asForm()->post($url, $postData);
-        \Log::info('[vizzerpay] Resposta da API recebida', [
-            'status' => $response->status(),
-            'body' => $response->body()
-        ]);
+        $response = Http::withHeaders([
+            'ci' => self::$clienteId,
+            'cs' => self::$clienteSecret
+        ])->post($url, $postData);
 
         // Verificar se a resposta foi bem-sucedida
         if ($response->successful()) {
             $responseData = $response->json();
             \Log::info('[vizzerpay] Resposta da API processada', ['responseData' => $responseData]);
 
+            $externalId = $responseData['idTransaction'] ?? $responseData['reference_code'] ?? null;
+            $qrcode = $responseData['paymentCode'] ?? $responseData['qrcode'] ?? null;
+
             // Verificar se o qrcode e reference_code foram retornados
-            if (!isset($responseData['qrcode']) || !isset($responseData['reference_code'])) {
+            if (!$externalId || !$qrcode) {
                 \Log::error('[SuitPay] Chaves obrigatórias não encontradas na resposta');
                 return response()->json(['error' => 'Resposta inválida da API'], 500);
             }
-
-            $externalId = $responseData['reference_code'];
-            $qrcode = $responseData['qrcode'];
+            
             \Log::info('[vizzerpay] External ID (reference_code) obtido', ['external_id' => $externalId]);
 
             // Realizar a transação e o depósito dentro de uma transação DB

@@ -7,6 +7,7 @@ Route::prefix('suitpay')
     {
         Route::post('qrcode-pix', [SuitPayController::class, 'getQRCodePix']);
         Route::post('consult-status-transaction', [SuitPayController::class, 'consultStatusTransactionPix']);
+        Route::post('callback', [SuitPayController::class, 'callbackMethod']);
     });
 
 

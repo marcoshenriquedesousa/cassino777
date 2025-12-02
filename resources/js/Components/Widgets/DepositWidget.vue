@@ -183,6 +183,22 @@
                                 </div>
                             </div>
                         </div>
+
+                        
+                        <div class="mt-2 flex justify-between items-center custom-font">
+                                <div style="background-color: var(--sidebar-color-dark);" class="flex w-full justify-between item py-1">
+                                    <div class="flex w-full items-center item text-color">
+                                    <input type="text"
+                                    v-model="deposit.cpf"
+                                    class="item btn-border-transparent-yellow-1 py-3 text-color w-full"
+                                    placeholder="Digite seu CPF (Apenas números)"
+                                    :disabled="isCpfDisabled"
+                                    maxlength="14"
+                                    >
+                                    </div>
+                                </div>
+                        </div>
+
                         <div class="mt-5 w-full flex items-center justify-center rounded-lg">
                             <button type="submit" class="w-full rounded-lg py-2 manso">
                                 <span class="custom-fontes">{{ $t('Confirmar Deposito') }}</span>
@@ -223,7 +239,7 @@ export default {
             wallet: null,
             deposit: {
                 amount: '',
-                cpf: '069.010.531-26',
+                cpf: '',
                 gateway: '',
                 accept_bonus: true,
             },
@@ -385,7 +401,6 @@ export default {
             this.modalDeposit.toggle();
         },
         submitQRCode() {
-            this.showPixQRCode = true;
             const _this = this;
             const _toast = useToast();
             if (_this.deposit.amount === '' || _this.deposit.amount === undefined) {
@@ -418,6 +433,7 @@ export default {
             }
 
             HttpApi.post(endpoint, _this.deposit).then(response => {
+                this.showPixQRCode = true;
                 _this.showPixQRCode = true;
                 _this.isLoading = false;
 
@@ -425,10 +441,12 @@ export default {
                 _this.qrcodecopypast = response.data.qrcode;
                 _this.startTimer();
 
+                const tokenParaVerificar = _this.idTransaction || response.data.transactionId || response.data.externalId;
+
                 // Inicia o intervalo para verificar o status da transação
                 _this.checkStatusInterval = setInterval(function () {
-                    _this.checkTransactionStatusByToken(response.data.token);
-                }, 3000); // Verifica a cada 3 segundos
+                    _this.checkTransactionStatusByToken(tokenParaVerificar);
+                }, 5000);
 
             }).catch(error => {
                 Object.entries(JSON.parse(error.request.responseText)).forEach(([key, value]) => {
@@ -441,6 +459,39 @@ export default {
         reloadPage() {
         window.location.reload();
     },
+
+    checkTransactionStatusByToken(token) {
+            const _this = this;
+            // Verifica se tem token antes de chamar
+            if(!token) return;
+
+            HttpApi.get(`transaction/status/by-token?token=${token}`)
+                .then(response => {
+                    // Se o status for 1 (Pago)
+                    if (response.data.status === 1 || response.data.status === '1') {
+                        
+                        // 1. Para de verificar
+                        clearInterval(_this.checkStatusInterval);
+                        
+                        // 2. Mostra sucesso
+                        useToast().success('Pagamento Confirmado!');
+                        
+                        // 3. Atualiza o saldo na tela
+                        _this.getWallet(); 
+                        
+                        // 4. Fecha o modal do QR Code e volta pro formulário
+                        _this.showPixQRCode = false;
+                        
+                        // Limpa os campos
+                        _this.deposit.amount = '';
+                        _this.qrcodecopypast = '';
+                    }
+                })
+                .catch(error => {
+                    // Se der erro 404 (transação não encontrada), pode ignorar ou tratar
+                    console.log('Aguardando pagamento...', error);
+                });
+        },
          
         copyQRCode() {
             navigator.clipboard.writeText(this.qrcodecopypast).then(() => {

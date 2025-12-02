@@ -33,52 +33,54 @@ class SuitPayController extends Controller
      * @param Request $request
      * @return \Illuminate\Http\JsonResponse|void
      */
-public function callbackMethod(Request $request)
-{
-    $data = $request->all();
-    \Log::info('[vizzerpay] Callback recebido', ['data' => $data]);
-
-    try {
-        if (empty($data['reference_code']) || empty($data['status'])) {
-            \Log::error('[vizzerpay] Dados incompletos no callback', ['data' => $data]);
-            return response()->json(['message' => 'reference_code e status são obrigatórios'], 400);
-        }
-
-        \Log::info('[vizzerpay] Dados de transação recebidos', [
-            'reference_code' => $data['reference_code'],
-            'status' => $data['status'],
-        ]);
-
-        if ($data['status'] === 'paid') {
-            \Log::info('[vizzerpay] Pagamento confirmado, tentando finalizar...', [
-                'external_id' => $data['reference_code'],
-            ]);
-
-            if (self::finalizePayment($data['reference_code'])) {
-                \Log::info('[vizzerpay] Pagamento finalizado com sucesso', [
-                    'external_id' => $data['reference_code'],
-                ]);
-                return response()->json(['message' => 'Pagamento confirmado'], 200);
-            } else {
-                \Log::warning('[vizzerpay] Falha ao finalizar pagamento', [
-                    'external_id' => $data['reference_code'],
-                ]);
-                return response()->json(['message' => 'Falha ao finalizar pagamento'], 500);
+    public function callbackMethod(Request $request)
+    {
+        $data = $request->all();
+        \Log::info('[vizzerpay] Callback recebido', ['data' => $data]);
+    
+        try {
+            // 1. Normalizar os nomes (Aceita tanto o padrão antigo quanto o novo)
+            $externalId = $data['idTransaction'] ?? $data['reference_code'] ?? $data['requestNumber'] ?? null;
+            $status = $data['statusTransaction'] ?? $data['status'] ?? null;
+    
+            // 2. Validação Flexível
+            if (!$externalId || !$status) {
+                \Log::error('[vizzerpay] Dados incompletos (ID ou Status faltando)', ['data' => $data]);
+                return response()->json(['message' => 'Dados incompletos'], 400);
             }
-        } else {
-            \Log::warning('[vizzerpay] Status diferente de "paid"', [
-                'status' => $data['status'],
+    
+            \Log::info('[vizzerpay] Processando transação', [
+                'id' => $externalId,
+                'status' => $status,
             ]);
-            return response()->json(['message' => 'Status inválido'], 400);
+    
+            // 3. Verificar se foi PAGO (Aceita PAID e PAID_OUT)
+            // PAID_OUT geralmente é usado para saques, mas algumas versões usam para Pix recebido também
+            if (strtoupper($status) === 'PAID' || strtoupper($status) === 'PAID_OUT') {
+                
+                \Log::info('[vizzerpay] Status confirmado de pagamento. Finalizando...', ['id' => $externalId]);
+    
+                if (self::finalizePayment($externalId)) {
+                    \Log::info('[vizzerpay] Sucesso! Saldo entregue.', ['id' => $externalId]);
+                    return response()->json(['message' => 'Pagamento confirmado'], 200);
+                } else {
+                    \Log::warning('[vizzerpay] Transação não encontrada ou já paga.', ['id' => $externalId]);
+                    // Retornamos 200 para a SuitPay parar de mandar o webhook, já que não vamos processar de novo
+                    return response()->json(['message' => 'Transação já processada ou inexistente'], 200);
+                }
+            } 
+            
+            \Log::warning('[vizzerpay] Status ignorado', ['status' => $status]);
+            return response()->json(['message' => 'Status ignorado'], 200);
+    
+        } catch (\Exception $e) {
+            \Log::error('[vizzerpay] Erro fatal no callback', [
+                'erro' => $e->getMessage(),
+                'linha' => $e->getLine()
+            ]);
+            return response()->json(['message' => 'Erro interno'], 500);
         }
-    } catch (\Exception $e) {
-        \Log::error('[vizzerpay] Erro inesperado no callback', [
-            'exception' => $e->getMessage(),
-            'trace' => $e->getTraceAsString(),
-        ]);
-        return response()->json(['message' => 'Erro interno'], 500);
     }
-}
 
 
 
@@ -88,7 +90,26 @@ public function callbackMethod(Request $request)
      */
     public function getQRCodePix(Request $request)
     {
-        return self::suitPayRequestQrcode($request);
+        // Chama a trait
+        $response = self::suitPayRequestQrcode($request);
+
+        // Intercepta para garantir que o 'qrcode' seja o texto Copia e Cola
+        if ($response instanceof \Illuminate\Http\JsonResponse) {
+            $data = $response->getData(true);
+
+            if (isset($data['paymentCode'])) {
+                $data['qrcode'] = $data['paymentCode']; // Força o texto
+            }
+            
+            // Garante que o token venha (importante para o frontend checar o status)
+            if (isset($data['transactionId'])) {
+                $data['token'] = $data['transactionId']; 
+            }
+
+            return response()->json($data);
+        }
+
+        return $response;
     }
 
     public function consultStatusTransactionPix(Request $request)
@@ -305,8 +326,12 @@ public function callbackMethod(Request $request)
 
         // Busca a transação na tabela usando o token e o user_id
         $transaction = Transaction::where('user_id', $user->id)
-            ->where('token', $token)
-            ->first();
+        ->where(function($query) use ($token) {
+            $query->where('payment_id', $token)   // Tenta achar pelo Payment ID
+                  ->orWhere('external_id', $token) // Tenta achar pelo External ID
+                  ->orWhere('token', $token);      // Tenta achar pelo Token (fallback)
+        })
+        ->first();
 
         // Verifica se a transação foi encontrada
         if ($transaction) {
